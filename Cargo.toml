@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["spaced-rep"]
+members = ["spaced-rep", "leit-auth"]
