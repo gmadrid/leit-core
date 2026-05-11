@@ -203,8 +203,7 @@ mod tests {
     // Payloads are real base64url-encoded JSON.
 
     // Payload: {"sub":"12345678-abcd-1234-abcd-123456789abc","role":"authenticated"}
-    const JWT_WITH_SUB: &str =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\
+    const JWT_WITH_SUB: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\
          .eyJzdWIiOiIxMjM0NTY3OC1hYmNkLTEyMzQtYWJjZC0xMjM0NTY3ODlhYmMiLCJyb2xlIjoiYXV0aGVudGljYXRlZCJ9\
          .fake_signature";
 
@@ -360,14 +359,16 @@ mod tests {
             req.body.as_deref(),
             Some(r#"{"refresh_token":"refresh-abc"}"#)
         );
-        assert!(req
-            .headers
-            .iter()
-            .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key-xyz"));
-        assert!(req
-            .headers
-            .iter()
-            .any(|(k, v)| k.as_ref() == "Content-Type" && v.as_ref() == "application/json"));
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key-xyz")
+        );
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k.as_ref() == "Content-Type" && v.as_ref() == "application/json")
+        );
     }
 
     /// Refresh tokens that contain JSON-special characters must be safely escaped.
@@ -394,9 +395,11 @@ mod tests {
             anon_key: "anon-key".to_string(),
         };
         let headers = common_headers(&config, "access-token-123");
-        assert!(headers
-            .iter()
-            .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key")
+        );
         assert!(
             headers
                 .iter()

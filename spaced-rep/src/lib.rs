@@ -212,10 +212,10 @@ impl Deck {
         let now = now_secs();
         let mut counts = [0u32; NUM_BOXES as usize];
         for key in candidates {
-            if let Some(item) = self.items.get(key.as_str()) {
-                if item.is_due(now) {
-                    counts[item.box_level as usize] += 1;
-                }
+            if let Some(item) = self.items.get(key.as_str())
+                && item.is_due(now)
+            {
+                counts[item.box_level as usize] += 1;
             }
         }
         counts
