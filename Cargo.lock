@@ -71,6 +71,7 @@ dependencies = [
 name = "leit-auth"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "serde",
  "serde_json",
 ]

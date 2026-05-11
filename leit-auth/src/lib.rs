@@ -1,4 +1,18 @@
+//! Generic Supabase + JWT auth primitives for Leitner-box study apps.
+//!
+//! This crate is I/O-free. It builds [`RequestDetails`] structs that the
+//! consumer executes with any HTTP client (reqwest, gloo-net, etc.), and
+//! exposes pure helpers for parsing Supabase JWT-style access tokens.
+//!
+//! ## WebAssembly support
+//!
+//! [`is_jwt_expired`] needs a wall clock. On native targets it uses
+//! `std::time::SystemTime`. On `wasm32-unknown-unknown` that returns the
+//! Unix epoch (silently), so callers must enable the `wasm` feature to
+//! route through `js_sys::Date::now()` instead.
+
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Supabase project configuration.
 ///
@@ -13,11 +27,13 @@ pub struct SupabaseConfig {
 ///
 /// Built by request-shaping functions in this crate (and by application
 /// code for app-specific endpoints), executed by the consumer with their
-/// preferred HTTP client.
+/// preferred HTTP client. Header names and values are `Cow<'static, str>`
+/// so static strings borrow instead of allocating.
+#[derive(Debug)]
 pub struct RequestDetails {
     pub url: String,
     pub method: String,
-    pub headers: Vec<(String, String)>,
+    pub headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
     pub body: Option<String>,
 }
 
@@ -32,12 +48,15 @@ pub struct AuthSession {
 }
 
 /// Standard Supabase request headers (apikey + Bearer auth).
-pub fn common_headers(config: &SupabaseConfig, access_token: &str) -> Vec<(String, String)> {
+pub fn common_headers(
+    config: &SupabaseConfig,
+    access_token: &str,
+) -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
     vec![
-        ("apikey".to_string(), config.anon_key.clone()),
+        (Cow::Borrowed("apikey"), Cow::Owned(config.anon_key.clone())),
         (
-            "Authorization".to_string(),
-            format!("Bearer {}", access_token),
+            Cow::Borrowed("Authorization"),
+            Cow::Owned(format!("Bearer {}", access_token)),
         ),
     ]
 }
@@ -48,10 +67,13 @@ pub fn refresh_token_request(config: &SupabaseConfig, refresh_token: &str) -> Re
         url: format!("{}/auth/v1/token?grant_type=refresh_token", config.base_url),
         method: "POST".to_string(),
         headers: vec![
-            ("apikey".to_string(), config.anon_key.clone()),
-            ("Content-Type".to_string(), "application/json".to_string()),
+            (Cow::Borrowed("apikey"), Cow::Owned(config.anon_key.clone())),
+            (
+                Cow::Borrowed("Content-Type"),
+                Cow::Borrowed("application/json"),
+            ),
         ],
-        body: Some(format!(r#"{{"refresh_token":"{}"}}"#, refresh_token)),
+        body: Some(serde_json::json!({ "refresh_token": refresh_token }).to_string()),
     }
 }
 
@@ -96,7 +118,22 @@ fn jwt_payload(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
 /// Check if a JWT's `exp` claim is in the past (with a 60-second buffer).
+///
+/// See the crate-level docs for the wasm32 caveat.
 pub fn is_jwt_expired(token: &str) -> bool {
     let Some(payload) = jwt_payload(token) else {
         return true;
@@ -104,11 +141,7 @@ pub fn is_jwt_expired(token: &str) -> bool {
     let Some(exp) = payload.get("exp").and_then(|v| v.as_u64()) else {
         return true;
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    now + 60 >= exp
+    now_secs() + 60 >= exp
 }
 
 /// Extract the `sub` (user ID) from a JWT without verification.
@@ -330,11 +363,28 @@ mod tests {
         assert!(req
             .headers
             .iter()
-            .any(|(k, v)| k == "apikey" && v == "anon-key-xyz"));
+            .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key-xyz"));
         assert!(req
             .headers
             .iter()
-            .any(|(k, v)| k == "Content-Type" && v == "application/json"));
+            .any(|(k, v)| k.as_ref() == "Content-Type" && v.as_ref() == "application/json"));
+    }
+
+    /// Refresh tokens that contain JSON-special characters must be safely escaped.
+    #[test]
+    fn refresh_token_request_escapes_special_characters_in_body() {
+        let config = SupabaseConfig {
+            base_url: "https://example.supabase.co".to_string(),
+            anon_key: "k".to_string(),
+        };
+        let req = refresh_token_request(&config, r#"tok"with\quotes"#);
+        // Parse the body back as JSON and verify the round-trip
+        let body = req.body.expect("body");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            parsed.get("refresh_token").and_then(|v| v.as_str()),
+            Some(r#"tok"with\quotes"#)
+        );
     }
 
     #[test]
@@ -346,9 +396,44 @@ mod tests {
         let headers = common_headers(&config, "access-token-123");
         assert!(headers
             .iter()
-            .any(|(k, v)| k == "apikey" && v == "anon-key"));
-        assert!(headers
-            .iter()
-            .any(|(k, v)| k == "Authorization" && v == "Bearer access-token-123"));
+            .any(|(k, v)| k.as_ref() == "apikey" && v.as_ref() == "anon-key"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k.as_ref() == "Authorization"
+                    && v.as_ref() == "Bearer access-token-123")
+        );
+    }
+
+    /// The 60s "treat-as-expired" buffer should fire for JWTs that expire imminently.
+    #[test]
+    fn is_jwt_expired_within_buffer_returns_true() {
+        // Build a JWT whose exp is now + 30s — should be treated as expired.
+        let exp = now_secs() + 30;
+        let payload = format!(r#"{{"sub":"u","exp":{}}}"#, exp);
+        let payload_b64 = base64_url_encode(payload.as_bytes());
+        let token = format!("header.{}.sig", payload_b64);
+        assert!(is_jwt_expired(&token));
+    }
+
+    /// Helper for the buffer test: encode bytes as URL-safe base64 without padding.
+    fn base64_url_encode(input: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut output = String::new();
+        let mut buf = 0u32;
+        let mut bits = 0u32;
+        for &b in input {
+            buf = (buf << 8) | b as u32;
+            bits += 8;
+            while bits >= 6 {
+                bits -= 6;
+                output.push(TABLE[((buf >> bits) & 0x3F) as usize] as char);
+            }
+        }
+        if bits > 0 {
+            output.push(TABLE[((buf << (6 - bits)) & 0x3F) as usize] as char);
+        }
+        output
     }
 }
